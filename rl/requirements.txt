@@ -1,0 +1,4 @@
+-r ../sft/requirements.txt
+Pillow>=12.2,<13
+requests>=2.32,<3
+vllm>=0.20,<0.31; platform_system == "Linux"

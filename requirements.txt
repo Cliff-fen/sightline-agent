@@ -1,0 +1,3 @@
+-r agent/requirements-tools.txt
+-r data/requirements-generation.txt
+-r rl/requirements.txt
