@@ -24,6 +24,10 @@ class SearchEnvironment:
     def __init__(self) -> None:
         self.base_url = os.getenv("TOOL_GATEWAY_URL", "http://127.0.0.1:8090").rstrip("/")
         self.timeout = float(os.getenv("TOOL_TIMEOUT_SECONDS", "60"))
+        self.http = requests.Session()
+        # The gateway is an internal service. Proxying loopback requests commonly
+        # produces empty 502 responses in cluster environments.
+        self.http.trust_env = False
         self.calls = 0
         self.failures = 0
         self.images: list[Any] = []
@@ -67,6 +71,8 @@ class SearchEnvironment:
             raise ToolGatewayError("the current rollout has no image to resolve")
 
         lowered = reference.casefold().strip()
+        if lowered.startswith("sandbox:"):
+            return self._image_uri(self.images[0])
         for candidate in self.images:
             if isinstance(candidate, str):
                 names = {candidate.casefold(), Path(candidate).name.casefold(), Path(candidate).stem.casefold()}
@@ -85,6 +91,13 @@ class SearchEnvironment:
         raise ToolGatewayError(
             f"ambiguous image reference {reference!r}; use image_0 through image_{len(self.images) - 1}"
         )
+
+    def _remember_image_results(self, result: str | list[dict[str, Any]]) -> None:
+        if not isinstance(result, list):
+            return
+        for part in result:
+            if isinstance(part, dict) and part.get("type") == "image" and part.get("image") is not None:
+                self.images.append(part["image"])
 
     def _trace(self, event: dict[str, Any]) -> None:
         path = os.getenv("TOOL_TRACE_FILE", "").strip()
@@ -113,22 +126,65 @@ class SearchEnvironment:
     def _call(self, name: str, arguments: dict[str, Any]) -> str | list[dict[str, Any]]:
         self.calls += 1
         started = time.perf_counter()
-        try:
-            response = requests.post(
-                f"{self.base_url}/v1/tools/{name}",
-                json={"callId": f"train-{uuid.uuid4()}", "arguments": arguments},
-                timeout=self.timeout,
-            )
-            payload = response.json()
-        except (requests.RequestException, ValueError) as exc:
+        max_attempts = max(1, int(os.getenv("TOOL_MAX_ATTEMPTS", "2")))
+        payload: dict[str, Any] | None = None
+        last_error = "unknown tool gateway failure"
+        last_status: int | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            retryable = True
+            try:
+                response = self.http.post(
+                    f"{self.base_url}/v1/tools/{name}",
+                    json={"callId": f"train-{uuid.uuid4()}", "arguments": arguments},
+                    timeout=self.timeout,
+                )
+                last_status = response.status_code
+                try:
+                    decoded = response.json()
+                except ValueError:
+                    last_error = (
+                        f"invalid JSON from gateway (HTTP {response.status_code}): "
+                        f"{response.text[:300]!r}"
+                    )
+                else:
+                    if not isinstance(decoded, dict):
+                        last_error = f"invalid gateway payload type: {type(decoded).__name__}"
+                    elif response.ok and decoded.get("ok"):
+                        payload = decoded
+                        break
+                    else:
+                        error = decoded.get("error") or {}
+                        last_error = str(error.get("message") or f"{name} failed")
+                        retryable = bool(error.get("retryable", response.status_code >= 500))
+            except requests.RequestException as exc:
+                last_error = f"transport failure: {exc}"
+
+            if attempt < max_attempts and retryable:
+                self._trace({
+                    "tool": name,
+                    "ok": False,
+                    "retry": True,
+                    "attempt": attempt,
+                    "arguments": arguments,
+                    "status": last_status,
+                    "error": last_error,
+                })
+                time.sleep(0.25 * attempt)
+                continue
+            break
+
+        if payload is None:
             self.failures += 1
-            self._trace({"tool": name, "ok": False, "arguments": arguments, "error": str(exc), "durationMs": round((time.perf_counter() - started) * 1000)})
-            raise ToolGatewayError(f"{name} transport failure: {exc}") from exc
-        if not response.ok or not payload.get("ok"):
-            self.failures += 1
-            error = payload.get("error") or {}
-            self._trace({"tool": name, "ok": False, "arguments": arguments, "status": response.status_code, "error": error, "durationMs": round((time.perf_counter() - started) * 1000)})
-            raise ToolGatewayError(str(error.get("message") or f"{name} failed"))
+            self._trace({
+                "tool": name,
+                "ok": False,
+                "arguments": arguments,
+                "status": last_status,
+                "error": last_error,
+                "durationMs": round((time.perf_counter() - started) * 1000),
+            })
+            raise ToolGatewayError(f"{name} failed: {last_error}")
         content = payload.get("content") or []
         converted: list[dict[str, Any]] = []
         for part in content:
@@ -202,6 +258,49 @@ class SearchEnvironment:
             A text observation and the cropped image.
         """
         result = self._call("crop", {"image": self._resolve_image_reference(image), "x": x, "y": y, "width": width, "height": height})
+        self._remember_image_results(result)
+        return result if isinstance(result, list) else [{"type": "text", "text": result}]
+
+    def sharpen(self, image: str, amount: float = 1.5) -> list[dict[str, Any]]:
+        """Sharpen a blurry image and return the enhanced image to the model.
+
+        Args:
+            image: A current input image or transformed image reference.
+            amount: Sharpening strength from zero to five.
+
+        Returns:
+            A text observation and the sharpened image.
+        """
+        result = self._call("sharpen", {"image": self._resolve_image_reference(image), "amount": amount})
+        self._remember_image_results(result)
+        return result if isinstance(result, list) else [{"type": "text", "text": result}]
+
+    def super_resolution(self, image: str, scale: float = 2.0) -> list[dict[str, Any]]:
+        """Upscale a low-resolution image and return it to the model.
+
+        Args:
+            image: A current input image or transformed image reference.
+            scale: Upscaling factor from 1.1 to four.
+
+        Returns:
+            A text observation and the upscaled image.
+        """
+        result = self._call("super_resolution", {"image": self._resolve_image_reference(image), "scale": scale})
+        self._remember_image_results(result)
+        return result if isinstance(result, list) else [{"type": "text", "text": result}]
+
+    def perspective_correct(self, image: str, angle: float = 0.0) -> list[dict[str, Any]]:
+        """Correct mild rotation or perspective distortion and return the result.
+
+        Args:
+            image: A current input image or transformed image reference.
+            angle: Rotation correction in degrees from minus twenty to twenty.
+
+        Returns:
+            A text observation and the corrected image.
+        """
+        result = self._call("perspective_correct", {"image": self._resolve_image_reference(image), "angle": angle})
+        self._remember_image_results(result)
         return result if isinstance(result, list) else [{"type": "text", "text": result}]
 
     def layout_parsing(self, image: str) -> str:

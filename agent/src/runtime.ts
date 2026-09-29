@@ -1,10 +1,11 @@
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { type Api, type Model, type Models } from "@earendil-works/pi-ai";
 import { type TSchema } from "typebox";
-import { resolveImage } from "./image-input.js";
+import { resolveImage, resolveImageReference } from "./image-input.js";
 import {
   type AgentEvent,
   type ContentPart,
+  type ImageRef,
   type ToolCall,
   type ToolResult,
   createId,
@@ -40,6 +41,7 @@ export class SearchAgentRuntime {
   private readonly agent: Agent;
   private readonly runId = createId("run");
   private readonly listeners = new Set<(event: AgentEvent) => void>();
+  private activeImages: ImageRef[] = [];
   private turnCount = 0;
   constructor(private readonly options: RuntimeOptions) {
     this.agent = new Agent({
@@ -69,6 +71,7 @@ export class SearchAgentRuntime {
       const images = await Promise.all(
         parts.filter((part) => part.type === "image").map((part) => resolveImage(part.image, this.options.maxImageBytes ?? 20 * 1024 * 1024)),
       );
+      this.activeImages = parts.filter((part) => part.type === "image").map((part) => part.image);
       if (images.length > 0 && !this.options.model.input.includes("image")) {
         throw new Error(`Model ${this.options.model.id} does not declare image input support`);
       }
@@ -89,7 +92,15 @@ export class SearchAgentRuntime {
       description: definition.description,
       parameters: definition.inputSchema as TSchema,
       execute: async (toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) => {
-        const result = await registry.execute({ id: toolCallId, name: definition.name, arguments: params }, signal ?? new AbortController().signal);
+        const arguments_ = "image" in params
+          ? { ...params, image: resolveImageReference(params.image, this.activeImages) }
+          : params;
+        const result = await registry.execute({ id: toolCallId, name: definition.name, arguments: arguments_ }, signal ?? new AbortController().signal);
+        for (const artifact of result.artifacts ?? []) {
+          if (artifact.kind === "image" && !this.activeImages.some((image) => image.uri === artifact.uri)) {
+            this.activeImages.push(artifact);
+          }
+        }
         if (!result.ok) throw new Error(result.error?.message ?? "Tool execution failed");
         return { content: result.content as never[], details: result };
       },

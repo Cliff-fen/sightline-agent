@@ -137,6 +137,24 @@ Each run produces accepted records, complete rejection audits, and SFT/GRPO
 JSONL files. See [`data/README.md`](data/README.md) for the data contract and
 quality gates.
 
+## Validate the pipeline
+
+Run the preflight before training. The probe should be a real image known to
+produce reverse-image matches; generated test patterns are unsuitable for that
+check.
+
+```bash
+python scripts/preflight.py \
+  --probe-image /path/to/searchable-image.jpg \
+  --rl data/processed/rl/train.jsonl \
+  --decode-images
+```
+
+To validate a completed smoke run as well, add
+`--training-log outputs/grpo-smoke/train.log`. The command fails if a tool
+returns invalid output, an image cannot be decoded, no tool is used during the
+rollout, the tool failure rate is nonzero, or no checkpoint is written.
+
 ## Train
 
 Run SFT, then initialize GRPO from the SFT output:

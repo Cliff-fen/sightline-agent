@@ -4,6 +4,45 @@ import { type ImageContent } from "@earendil-works/pi-ai";
 import { type ImageRef } from "./protocol.js";
 
 const DATA_URI_RE = /^data:([^;,]+);base64,(.+)$/s;
+const IMAGE_ALIAS_RE = /^(?:(?:the|an?)\s+)?(?:(uploaded|input|original|source|current|latest|cropped|enhanced)\s+)?(?:image|photo|picture)(?:[_\s-]?(\d+))?(?:\.[a-z0-9]+)?$/i;
+
+function imageNames(ref: ImageRef): Set<string> {
+  const names = new Set([ref.id.toLowerCase(), ref.uri.toLowerCase()]);
+  try {
+    const pathname = ref.uri.startsWith("file://") ? fileURLToPath(ref.uri) : new URL(ref.uri).pathname;
+    const filename = pathname.split("/").filter(Boolean).at(-1);
+    if (filename) {
+      names.add(filename.toLowerCase());
+      names.add(filename.replace(/\.[^.]+$/, "").toLowerCase());
+    }
+  } catch {
+    // artifact:// identifiers and data URIs are already covered by id/uri.
+  }
+  return names;
+}
+
+/** Resolve the natural image aliases models commonly emit at tool boundaries. */
+export function resolveImageReference(reference: unknown, images: readonly ImageRef[]): string {
+  if (typeof reference !== "string" || !reference.trim()) return String(reference ?? "");
+  const value = reference.trim();
+  if (/^(?:https?:\/\/|file:\/\/|artifact:\/\/|data:)/i.test(value)) return value;
+  if (images.length === 0) return value;
+
+  const lowered = value.toLowerCase();
+  const exact = images.find((image) => imageNames(image).has(lowered));
+  if (exact) return exact.uri;
+
+  const alias = IMAGE_ALIAS_RE.exec(value);
+  if (alias?.[2] !== undefined) {
+    const index = Number(alias[2]);
+    if (Number.isInteger(index) && index >= 0 && index < images.length) return images[index]?.uri ?? value;
+  }
+  if (alias?.[1] === "latest" || alias?.[1] === "cropped" || alias?.[1] === "enhanced") {
+    return images.at(-1)?.uri ?? value;
+  }
+  if (images.length === 1) return images[0]?.uri ?? value;
+  return value;
+}
 
 function enforceLimit(bytes: Uint8Array, maxBytes: number, source: string): void {
   if (bytes.byteLength > maxBytes) {

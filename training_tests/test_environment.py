@@ -53,3 +53,64 @@ def test_layout_result_is_compact_and_cached(monkeypatch) -> None:
     assert "already parsed" in second
     assert len(calls) == 1
     assert env.get_reward() == pytest.approx(-0.1)
+
+
+def test_gateway_retries_an_empty_response(monkeypatch) -> None:
+    env = environment.SearchEnvironment()
+    env.reset()
+    monkeypatch.setenv("TOOL_MAX_ATTEMPTS", "2")
+    monkeypatch.setattr(environment.time, "sleep", lambda _seconds: None)
+
+    class Response:
+        def __init__(self, body, *, status=200, text=""):
+            self.body = body
+            self.status_code = status
+            self.ok = status < 400
+            self.text = text
+
+        def json(self):
+            if self.body is None:
+                raise ValueError("empty response")
+            return self.body
+
+    responses = iter(
+        [
+            Response(None),
+            Response({"ok": True, "content": [{"type": "text", "text": "evidence"}]}),
+        ]
+    )
+    monkeypatch.setattr(env.http, "post", lambda *args, **kwargs: next(responses))
+
+    assert env.text_search("Sydney") == "evidence"
+    assert env.calls == 1
+    assert env.failures == 0
+
+
+def test_gateway_client_does_not_inherit_proxy_environment() -> None:
+    env = environment.SearchEnvironment()
+    assert env.http.trust_env is False
+
+
+@pytest.mark.parametrize("method_name", ["crop", "sharpen", "super_resolution", "perspective_correct"])
+def test_image_transform_is_available_to_the_next_tool_call(monkeypatch, method_name: str) -> None:
+    env = environment.SearchEnvironment()
+    original = Image.new("RGB", (8, 8), "white")
+    transformed = Image.new("RGB", (4, 4), "black")
+    env.reset(images=[original])
+    monkeypatch.setattr(
+        env,
+        "_call",
+        lambda _name, _arguments: [
+            {"type": "text", "text": "done"},
+            {"type": "image", "image": transformed},
+        ],
+    )
+
+    method = getattr(env, method_name)
+    if method_name == "crop":
+        method("sandbox:/mnt/data/image.png", 0, 0, 4, 4)
+    else:
+        method("sandbox:/mnt/data/image.png")
+
+    assert len(env.images) == 2
+    assert env._resolve_image_reference("image_1") == env._image_uri(transformed)

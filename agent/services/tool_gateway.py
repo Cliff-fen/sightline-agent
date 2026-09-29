@@ -37,10 +37,12 @@ MAX_IMAGE_BYTES = int(os.getenv("TOOL_MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
 MAX_RESULTS = 10
 SERPER_URL = os.getenv("SERPER_SEARCH_URL", "https://google.serper.dev/search")
 SERPER_LENS_URL = os.getenv("SERPER_LENS_URL", "https://google.serper.dev/lens")
+SERPER_SCRAPE_URL = os.getenv("SERPER_SCRAPE_URL", "https://scrape.serper.dev")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
 JINA_API_KEY = os.getenv("JINA_API_KEY", "").strip()
 JINA_READER_URL = os.getenv("JINA_READER_URL", "https://r.jina.ai").rstrip("/")
 JINA_ALLOW_ANONYMOUS = os.getenv("JINA_ALLOW_ANONYMOUS", "true").lower() in {"1", "true", "yes"}
+PAGE_READER_PROVIDER = os.getenv("PAGE_READER_PROVIDER", "auto").strip().lower()
 LAYOUT_URL = os.getenv("LAYOUT_PARSING_URL", "").strip()
 IMAGE_CAPTION_BASE_URL = os.getenv("IMAGE_CAPTION_BASE_URL", "").rstrip("/")
 IMAGE_CAPTION_MODEL = os.getenv("IMAGE_CAPTION_MODEL", "").strip()
@@ -192,7 +194,7 @@ def _serper_lens(public_url: str, *, include_source_url: bool) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
-def _jina_read(url: str) -> str:
+def _jina_only(url: str) -> str:
     if not JINA_API_KEY and not JINA_ALLOW_ANONYMOUS:
         raise ToolFailure("MISSING_JINA_API_KEY", "JINA_API_KEY is not configured")
     if requests is None:
@@ -200,22 +202,60 @@ def _jina_read(url: str) -> str:
     headers = {"Accept": "text/plain"}
     if JINA_API_KEY:
         headers["Authorization"] = f"Bearer {JINA_API_KEY}"
-    try:
-        response = requests.get(f"{JINA_READER_URL}/{url}", headers=headers, timeout=20)
-    except requests.RequestException:
-        return _direct_read(url)
+    response = requests.get(f"{JINA_READER_URL}/{url}", headers=headers, timeout=20)
     # A newly created/free key can legitimately have zero paid balance. The
     # Reader's anonymous tier is slower but still useful for local smoke tests.
     if response.status_code in {401, 402} and JINA_ALLOW_ANONYMOUS and JINA_API_KEY:
-        try:
-            response = requests.get(f"{JINA_READER_URL}/{url}", headers={"Accept": "text/plain"}, timeout=20)
-        except requests.RequestException:
-            return _direct_read(url)
+        response = requests.get(f"{JINA_READER_URL}/{url}", headers={"Accept": "text/plain"}, timeout=20)
     if not response.ok:
-        return _direct_read(url)
+        raise ToolFailure("JINA_HTTP_ERROR", f"Jina Reader returned HTTP {response.status_code}", retryable=response.status_code >= 500)
     if not response.text.strip():
         raise ToolFailure("JINA_EMPTY_RESPONSE", "Jina Reader returned empty content")
     return response.text[:12000]
+
+
+def _serper_scrape(url: str) -> str:
+    _require_serper()
+    response = requests.post(
+        SERPER_SCRAPE_URL,
+        headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+        json={"url": url, "includeMarkdown": True},
+        timeout=45,
+    )
+    if not response.ok:
+        raise ToolFailure(
+            "SERPER_SCRAPE_ERROR",
+            f"Serper Scrape returned HTTP {response.status_code}: {response.text[:300]}",
+            retryable=response.status_code >= 500,
+        )
+    payload = response.json()
+    text = _text(payload.get("markdown") or payload.get("text"))
+    if not text:
+        raise ToolFailure("SERPER_SCRAPE_EMPTY", "Serper Scrape returned empty content")
+    return text[:12000]
+
+
+def _read_page(url: str) -> str:
+    providers = (
+        [PAGE_READER_PROVIDER]
+        if PAGE_READER_PROVIDER in {"jina", "serper", "direct"}
+        else ["jina", "serper", "direct"]
+    )
+    errors: list[str] = []
+    for provider in providers:
+        try:
+            if provider == "jina":
+                return _jina_only(url)
+            if provider == "serper":
+                return _serper_scrape(url)
+            return _direct_read(url)
+        except (ToolFailure, requests.RequestException, ValueError) as exc:
+            errors.append(f"{provider}: {exc}")
+    raise ToolFailure(
+        "PAGE_READ_ERROR",
+        "all configured page readers failed: " + "; ".join(errors),
+        retryable=True,
+    )
 
 
 def _direct_read(url: str) -> str:
@@ -408,7 +448,7 @@ def execute_tool(name: str, arguments: dict[str, Any]) -> tuple[str, list[dict[s
         url = _text(arguments.get("url"))
         if not urllib.parse.urlparse(url).scheme:
             raise ToolFailure("INVALID_URL", "url must include http:// or https://")
-        return _jina_read(url), []
+        return _read_page(url), []
     if name == "image_search":
         value = _text(arguments.get("image") or arguments.get("url"))
         if not value:

@@ -39,11 +39,11 @@ def main() -> None:
         {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "Read the large text. Call layout_parsing exactly once, then answer directly without another tool."}]},
         {
             "role": "assistant",
-            "content": "",
-            "tool_calls": [{"type": "function", "function": {"name": "layout_parsing", "arguments": {"image": "image.png"}}}],
+            "content": [],
+            "tool_calls": [{"type": "function", "id": "call-smoke-layout", "function": {"name": "layout_parsing", "arguments": {"image": "image.png"}}}],
         },
-        {"role": "tool", "name": "layout_parsing", "content": '{"text":"SIGHTLINE 2026"}'},
-        {"role": "assistant", "content": "The text reads SIGHTLINE 2026."},
+        {"role": "tool", "tool_call_id": "call-smoke-layout", "name": "layout_parsing", "content": [{"type": "text", "text": '{"text":"SIGHTLINE 2026"}'}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "The text reads SIGHTLINE 2026."}]},
     ]
     sft_rows = [{"messages": messages, "images": [str(image_path)], "tools": [tool]} for _ in range(4)]
     rl_rows = [

@@ -15,9 +15,11 @@ from trl import GRPOConfig, GRPOTrainer
 try:
     from .environment import SearchEnvironment
     from .rewards import answer_reward, fatal_review_reward, final_answer_reward
+    from .tool_protocol import configure_tool_response_parser
 except ImportError:  # Direct execution: python rl/train.py
     from environment import SearchEnvironment
     from rewards import answer_reward, fatal_review_reward, final_answer_reward
+    from tool_protocol import configure_tool_response_parser
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,8 @@ class TrainConfig:
     bf16: bool = True
     tf32: bool = True
     logging_steps: int = 1
+    log_completions: bool = False
+    num_completions_to_print: int | None = None
     save_steps: int = 500
     eval_steps: int | None = 500
     save_total_limit: int | None = None
@@ -96,7 +100,9 @@ def load_split(path: str):
 
 def load_policy(model_name: str, cfg: TrainConfig):
     adapter_path = Path(model_name) / "adapter_config.json"
-    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    processor = configure_tool_response_parser(
+        AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    )
     if adapter_path.is_file():
         adapter_config = PeftConfig.from_pretrained(model_name)
         base_model = AutoModelForImageTextToText.from_pretrained(
@@ -155,6 +161,8 @@ def main() -> None:
         bf16=cfg.bf16,
         tf32=cfg.tf32,
         logging_steps=cfg.logging_steps,
+        log_completions=cfg.log_completions,
+        num_completions_to_print=cfg.num_completions_to_print,
         save_steps=cfg.save_steps,
         eval_strategy="steps" if eval_dataset is not None else "no",
         eval_steps=cfg.eval_steps,
