@@ -31,15 +31,11 @@ class SearchEnvironment:
         self.calls = 0
         self.failures = 0
         self.images: list[Any] = []
-        self.layout_cache: dict[str, str] = {}
-        self.duplicate_calls = 0
 
     def reset(self, images: list[Any] | None = None, image: Any | None = None, **_: Any) -> None:
         self.calls = 0
         self.failures = 0
         self.images = list(images or ([] if image is None else [image]))
-        self.layout_cache = {}
-        self.duplicate_calls = 0
         return None
 
     @staticmethod
@@ -79,17 +75,16 @@ class SearchEnvironment:
                 if lowered in names:
                     return self._image_uri(candidate)
 
-        match = re.fullmatch(r"(?:input[_ -]?)?image(?:[_ -]?(\d+))?(?:\.[a-z0-9]+)?", lowered)
+        match = re.fullmatch(r"(?:(?:input[_ -]?)?image|img)(?:[_ -]?(\d+))?(?:\.[a-z0-9]+)?", lowered)
         if match and match.group(1) is not None:
-            index = int(match.group(1))
-            if index >= len(self.images) and 1 <= index <= len(self.images):
-                index -= 1
+            number = int(match.group(1))
+            index = 0 if number == 0 else number - 1
             if 0 <= index < len(self.images):
                 return self._image_uri(self.images[index])
         if len(self.images) == 1:
             return self._image_uri(self.images[0])
         raise ToolGatewayError(
-            f"ambiguous image reference {reference!r}; use image_0 through image_{len(self.images) - 1}"
+            f"ambiguous image reference {reference!r}; use img_1 through img_{len(self.images)}"
         )
 
     def _remember_image_results(self, result: str | list[dict[str, Any]]) -> None:
@@ -198,51 +193,50 @@ class SearchEnvironment:
         self._trace({"tool": name, "ok": True, "arguments": arguments, "durationMs": round((time.perf_counter() - started) * 1000)})
         return converted
 
-    def web_search(self, query: str, topK: int = 5) -> str:
+    def web_search(self, q: str, hl: str = "en") -> str:
         """Search the public web for ranked evidence.
 
         Args:
-            query: A focused textual search query.
-            topK: Maximum number of results to return.
+            q: A focused textual search query.
+            hl: Search language code.
 
         Returns:
             Titles, URLs, and evidence snippets.
         """
-        return str(self._call("web_search", {"query": query, "topK": topK}))
+        return str(self._call("web_search", {"q": q, "hl": hl}))
 
-    def text_search(self, query: str, topK: int = 5) -> str:
+    def text_search(
+        self,
+        q: str = "",
+        query: str = "",
+        hl: str = "en",
+        top_k: int = 5,
+        lang: str = "",
+    ) -> str:
         """Search for textual evidence related to a question or entity.
 
         Args:
-            query: A focused textual search query.
-            topK: Maximum number of results to return.
+            q: A focused textual search query.
+            query: Alternative spelling for q.
+            hl: Search language code.
+            top_k: Maximum number of pages to summarize.
+            lang: Alternative spelling for hl.
 
         Returns:
             Ranked textual evidence.
         """
-        return str(self._call("text_search", {"query": query, "topK": topK}))
+        return str(self._call("text_search", {"q": q or query, "hl": hl or lang or "en", "top_k": top_k}))
 
-    def visit(self, url: str) -> str:
-        """Read a public webpage as clean text.
-
-        Args:
-            url: An absolute HTTP or HTTPS URL.
-
-        Returns:
-            Extracted page content.
-        """
-        return str(self._call("visit", {"url": url}))
-
-    def image_search(self, image: str) -> str:
+    def image_search(self, url: str) -> str:
         """Find visually similar images and source pages.
 
         Args:
-            image: A public image URL or an artifact URI returned by another tool.
+            url: A public image URL, image reference, or artifact URI.
 
         Returns:
             Visual matches and their source metadata.
         """
-        return str(self._call("image_search", {"image": self._resolve_image_reference(image)}))
+        return str(self._call("image_search", {"url": self._resolve_image_reference(url)}))
 
     def crop(self, image: str, x: int, y: int, width: int, height: int) -> list[dict[str, Any]]:
         """Crop an image and return the new image to the model.
@@ -275,7 +269,7 @@ class SearchEnvironment:
         self._remember_image_results(result)
         return result if isinstance(result, list) else [{"type": "text", "text": result}]
 
-    def super_resolution(self, image: str, scale: float = 2.0) -> list[dict[str, Any]]:
+    def super_resolution(self, image: str, scale: int = 4) -> list[dict[str, Any]]:
         """Upscale a low-resolution image and return it to the model.
 
         Args:
@@ -289,52 +283,40 @@ class SearchEnvironment:
         self._remember_image_results(result)
         return result if isinstance(result, list) else [{"type": "text", "text": result}]
 
-    def perspective_correct(self, image: str, angle: float = 0.0) -> list[dict[str, Any]]:
+    def perspective_correct(self, image: str) -> list[dict[str, Any]]:
         """Correct mild rotation or perspective distortion and return the result.
 
         Args:
             image: A current input image or transformed image reference.
-            angle: Rotation correction in degrees from minus twenty to twenty.
-
         Returns:
             A text observation and the corrected image.
         """
-        result = self._call("perspective_correct", {"image": self._resolve_image_reference(image), "angle": angle})
+        result = self._call("perspective_correct", {"image": self._resolve_image_reference(image)})
         self._remember_image_results(result)
         return result if isinstance(result, list) else [{"type": "text", "text": result}]
 
-    def layout_parsing(self, image: str) -> str:
-        """Extract text and reading order from a document image once.
+    def layout_parsing(
+        self,
+        image: str = "",
+        file_path: str = "",
+        use_chart_recognition: bool = False,
+        use_doc_orientation_classify: bool = False,
+    ) -> str:
+        """Extract structured text and reading order from a document image.
 
         Args:
-            image: A public image URL or artifact URI.
+            image: A public image URL, image reference, or artifact URI.
+            file_path: Optional absolute image path.
+            use_chart_recognition: Enable chart recognition.
+            use_doc_orientation_classify: Enable orientation classification.
 
         Returns:
-            Concise OCR text. Use it to answer instead of repeating the call.
+            Structured OCR text.
         """
-        resolved = self._resolve_image_reference(image)
-        if resolved in self.layout_cache:
-            self.duplicate_calls += 1
-            return self.layout_cache[resolved] + "\nThe image is already parsed; answer from this observation."
-        raw = str(self._call("layout_parsing", {"image": resolved}))
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            concise = raw[:4000]
-        else:
-            text = str(payload.get("text") or "").strip()
-            if text:
-                concise = f"Extracted text in reading order:\n{text[:4000]}"
-            else:
-                blocks = payload.get("blocks") or []
-                lines = [str(block.get("text", "")).strip() for block in blocks if isinstance(block, dict)]
-                concise = "Extracted text in reading order:\n" + "\n".join(line for line in lines if line)[:4000]
-        self.layout_cache[resolved] = concise
-        return concise
-
-    def get_reward(self) -> float:
-        if self.failures:
-            return -1.0
-        if not self.calls:
-            return 0.0
-        return max(-1.0, 0.1 - 0.2 * self.duplicate_calls)
+        source = file_path or image
+        resolved = self._resolve_image_reference(source)
+        return str(self._call("layout_parsing", {
+            "image": resolved,
+            "use_chart_recognition": use_chart_recognition,
+            "use_doc_orientation_classify": use_doc_orientation_classify,
+        }))

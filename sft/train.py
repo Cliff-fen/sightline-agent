@@ -24,6 +24,10 @@ class TrainConfig:
     per_device_train_batch_size: int = 2
     per_device_eval_batch_size: int = 1
     gradient_accumulation_steps: int = 2
+    expected_world_size: int | None = None
+    expected_global_batch_size: int | None = None
+    max_length: int = 32000
+    assistant_only_loss: bool = True
     gradient_checkpointing: bool = True
     bf16: bool = True
     tf32: bool = True
@@ -32,7 +36,7 @@ class TrainConfig:
     eval_steps: int | None = 500
     save_total_limit: int | None = None
     seed: int = 3407
-    use_lora: bool = True
+    use_lora: bool = False
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05
@@ -49,7 +53,15 @@ def load_config(path: str) -> TrainConfig:
         raise ValueError("SFT config must be a YAML object")
     config = TrainConfig(**payload)
     world_size = int(__import__("os").environ.get("WORLD_SIZE", "1"))
+    if config.expected_world_size is not None and world_size != config.expected_world_size:
+        raise ValueError(
+            f"this profile requires {config.expected_world_size} processes, got WORLD_SIZE={world_size}"
+        )
     effective_batch = world_size * config.per_device_train_batch_size * config.gradient_accumulation_steps
+    if config.expected_global_batch_size is not None and effective_batch != config.expected_global_batch_size:
+        raise ValueError(
+            f"global batch must be {config.expected_global_batch_size}, got {effective_batch}"
+        )
     print(f"SFT effective batch: {world_size} x {config.per_device_train_batch_size} x {config.gradient_accumulation_steps} = {effective_batch}")
     return config
 
@@ -101,6 +113,8 @@ def main() -> None:
         per_device_train_batch_size=cfg.per_device_train_batch_size,
         per_device_eval_batch_size=cfg.per_device_eval_batch_size,
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+        max_length=cfg.max_length,
+        assistant_only_loss=cfg.assistant_only_loss,
         gradient_checkpointing=cfg.gradient_checkpointing,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         bf16=cfg.bf16,
@@ -114,7 +128,8 @@ def main() -> None:
         report_to=cfg.report_to,
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
-        max_length=None,
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.1,
         model_init_kwargs={"trust_remote_code": True, "dtype": "bfloat16"},
         deepspeed=cfg.deepspeed,
     )

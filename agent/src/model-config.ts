@@ -9,6 +9,7 @@ import {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { AGENT_CONTRACT } from "./contract.js";
 
 export type ModelProfileName = "local" | "claude" | "deepseek" | "openai";
 
@@ -26,6 +27,7 @@ export type RuntimeConfig = {
   apiKeyEnv?: string;
   configured: boolean;
   toolGatewayUrl: string;
+  toolTimeoutMs: number;
   maxTurns: number;
   maxImageBytes: number;
 };
@@ -98,7 +100,7 @@ function localModel(id: string, baseUrl: string, env: NodeJS.ProcessEnv): Model<
     input: modelInput(env, ["text", "image"]),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: positiveInteger(env.MODEL_CONTEXT_WINDOW, 65_536, "MODEL_CONTEXT_WINDOW"),
-    maxTokens: positiveInteger(env.MODEL_MAX_TOKENS, 8_192, "MODEL_MAX_TOKENS"),
+    maxTokens: positiveInteger(env.MODEL_MAX_TOKENS, 4_096, "MODEL_MAX_TOKENS"),
     compat: {
       supportsStore: false,
       supportsDeveloperRole: false,
@@ -119,7 +121,7 @@ function deepSeekModel(id: string, baseUrl: string, env: NodeJS.ProcessEnv): Mod
     input: modelInput(env, ["text"]),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: positiveInteger(env.MODEL_CONTEXT_WINDOW, 1_000_000, "MODEL_CONTEXT_WINDOW"),
-    maxTokens: positiveInteger(env.MODEL_MAX_TOKENS, 128_000, "MODEL_MAX_TOKENS"),
+    maxTokens: positiveInteger(env.MODEL_MAX_TOKENS, 4_096, "MODEL_MAX_TOKENS"),
     compat: {
       supportsStore: false,
       supportsDeveloperRole: false,
@@ -140,7 +142,7 @@ function relayOpenAIModel(id: string, baseUrl: string, env: NodeJS.ProcessEnv): 
     input: modelInput(env, ["text", "image"]),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: positiveInteger(env.MODEL_CONTEXT_WINDOW, 128_000, "MODEL_CONTEXT_WINDOW"),
-    maxTokens: positiveInteger(env.MODEL_MAX_TOKENS, 16_384, "MODEL_MAX_TOKENS"),
+    maxTokens: positiveInteger(env.MODEL_MAX_TOKENS, 4_096, "MODEL_MAX_TOKENS"),
     compat: {
       supportsDeveloperRole: false,
       supportsStrictMode: true,
@@ -203,7 +205,10 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     id: modelId,
     name: modelId,
   };
-  const model = baseUrl === catalogModel.baseUrl ? catalogModel : { ...catalogModel, baseUrl };
+  const model = {
+    ...(baseUrl === catalogModel.baseUrl ? catalogModel : { ...catalogModel, baseUrl }),
+    maxTokens: positiveInteger(env.MODEL_MAX_TOKENS, 4_096, "MODEL_MAX_TOKENS"),
+  };
   const apiKeyEnv = spec.apiKeyEnv;
   const configured = !apiKeyEnv || Boolean(env[apiKeyEnv]);
 
@@ -214,7 +219,8 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
     configured,
     toolGatewayUrl: httpUrl(env.TOOL_GATEWAY_URL ?? "http://127.0.0.1:8090", "TOOL_GATEWAY_URL"),
-    maxTurns: positiveInteger(env.MAX_TURNS, 20, "MAX_TURNS"),
+    toolTimeoutMs: positiveInteger(env.TOOL_TIMEOUT_MS, AGENT_CONTRACT.toolTimeoutMs, "TOOL_TIMEOUT_MS"),
+    maxTurns: positiveInteger(env.MAX_TURNS, AGENT_CONTRACT.maxTurns, "MAX_TURNS"),
     maxImageBytes: positiveInteger(env.MODEL_MAX_IMAGE_BYTES, 20 * 1024 * 1024, "MODEL_MAX_IMAGE_BYTES"),
   };
 }

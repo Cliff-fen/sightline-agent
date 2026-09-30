@@ -4,6 +4,11 @@ The runtime uses Pi for provider messages, conversation state, and tool dispatch
 Sightline adds the multimodal request contract,
 bounded image ingestion, an HTTP service surface, and a tool gateway.
 
+Local OpenAI-compatible models and remote APIs use this same runtime. Provider
+adapters only translate the wire format; the system prompt, tool schemas,
+execution policy, limits, observations, and event stream come from one shared
+Agent contract.
+
 | Path | Purpose |
 | --- | --- |
 | `src/runtime.ts` | Creates one Pi session per run and streams structured events |

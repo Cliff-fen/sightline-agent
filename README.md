@@ -16,7 +16,8 @@ GRPO, and reusable Agent Skills.
   resolution, and perspective correction.
 - Multi-hop data generation with CLIP filtering and strict quality gates.
 - Shared message and tool contracts across inference, SFT, and GRPO.
-- Deterministic answer rewards with explicit tool and execution signals.
+- Judge-scored answer correctness and query utility with explicit format and
+  execution signals.
 
 ## Architecture
 
@@ -51,7 +52,7 @@ flowchart TD
     C --> G[GRPO rollouts]
     G --> X[Fresh tool environment]
     X --> G
-    G --> R[Answer, format, and tool rewards]
+    G --> R[Accuracy, query utility, and format rewards]
     R --> O[Policy update]
     O --> G
 ```
@@ -64,6 +65,7 @@ flowchart TD
 | [`data/`](data/) | Data generation, validation, and conversion |
 | [`sft/`](sft/) | Supervised trajectory training |
 | [`rl/`](rl/) | Tool-interactive GRPO |
+| [`shared/`](shared/) | Agent prompt, tool set, and runtime limits shared by inference and training |
 | [`.pi/skills/`](.pi/skills/) | Search and full-agent skills |
 
 ## Installation
@@ -137,7 +139,7 @@ Each run produces accepted records, complete rejection audits, and SFT/GRPO
 JSONL files. See [`data/README.md`](data/README.md) for the data contract and
 quality gates.
 
-## Validate the pipeline
+## Validate data and tools
 
 Run the preflight before training. The probe should be a real image known to
 produce reverse-image matches; generated test patterns are unsuitable for that
@@ -150,10 +152,9 @@ python scripts/preflight.py \
   --decode-images
 ```
 
-To validate a completed smoke run as well, add
-`--training-log outputs/grpo-smoke/train.log`. The command fails if a tool
-returns invalid output, an image cannot be decoded, no tool is used during the
-rollout, the tool failure rate is nonzero, or no checkpoint is written.
+The command fails if a tool returns invalid output or an image cannot be
+decoded. Training integration checks can use the same validator with a private
+profile suited to the deployment environment.
 
 ## Train
 
@@ -165,9 +166,10 @@ accelerate launch sft/train.py --config sft/configs/production.yaml
 accelerate launch rl/train.py --config rl/configs/production.yaml
 ```
 
-The `smoke.yaml` profiles provide one-step integration checks. Dataset
-conversion and stage-specific options are documented in [`data/`](data/),
-[`sft/`](sft/), and [`rl/`](rl/).
+The checked-in profiles are backend-neutral starting points. Adjust process
+count, effective batch, memory strategy, and optional adapters in a private
+configuration suited to the target system. Stage-specific options are
+documented in [`data/`](data/), [`sft/`](sft/), and [`rl/`](rl/).
 
 ## Use as skills
 

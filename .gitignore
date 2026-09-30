@@ -22,3 +22,8 @@ data/processed/
 data/generated/
 outputs/
 wandb/
+
+# Local integration fixtures and machine-specific training profiles.
+data/make_smoke_data.py
+**/configs/smoke.yaml
+sft/configs/zero3.json

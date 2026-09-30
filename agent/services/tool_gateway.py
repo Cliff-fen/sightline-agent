@@ -7,15 +7,20 @@ structured errors so the agent cannot mistake a placeholder for evidence.
 from __future__ import annotations
 
 import base64
+import functools
+import hashlib
+import html
 import io
 import json
 import mimetypes
 import os
 import re
+import sqlite3
 import time
 import urllib.parse
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -39,14 +44,21 @@ SERPER_URL = os.getenv("SERPER_SEARCH_URL", "https://google.serper.dev/search")
 SERPER_LENS_URL = os.getenv("SERPER_LENS_URL", "https://google.serper.dev/lens")
 SERPER_SCRAPE_URL = os.getenv("SERPER_SCRAPE_URL", "https://scrape.serper.dev")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
+BING_RSS_URL = os.getenv("BING_RSS_URL", "").strip()
 JINA_API_KEY = os.getenv("JINA_API_KEY", "").strip()
 JINA_READER_URL = os.getenv("JINA_READER_URL", "https://r.jina.ai").rstrip("/")
 JINA_ALLOW_ANONYMOUS = os.getenv("JINA_ALLOW_ANONYMOUS", "true").lower() in {"1", "true", "yes"}
 PAGE_READER_PROVIDER = os.getenv("PAGE_READER_PROVIDER", "auto").strip().lower()
+PAGE_CACHE_MAXSIZE = int(os.getenv("PAGE_CACHE_MAXSIZE", "2048"))
+TOOL_CACHE_PATH = Path(os.getenv("TOOL_CACHE_PATH", str(ROOT / "tool-cache.sqlite3"))).expanduser()
+TOOL_CACHE_TTL_SECONDS = int(os.getenv("TOOL_CACHE_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 LAYOUT_URL = os.getenv("LAYOUT_PARSING_URL", "").strip()
 IMAGE_CAPTION_BASE_URL = os.getenv("IMAGE_CAPTION_BASE_URL", "").rstrip("/")
 IMAGE_CAPTION_MODEL = os.getenv("IMAGE_CAPTION_MODEL", "").strip()
 IMAGE_CAPTION_API_KEY = os.getenv("IMAGE_CAPTION_API_KEY", "local").strip()
+SEARCH_SUMMARY_BASE_URL = os.getenv("SEARCH_SUMMARY_BASE_URL", IMAGE_CAPTION_BASE_URL).rstrip("/")
+SEARCH_SUMMARY_MODEL = os.getenv("SEARCH_SUMMARY_MODEL", IMAGE_CAPTION_MODEL).strip()
+SEARCH_SUMMARY_API_KEY = os.getenv("SEARCH_SUMMARY_API_KEY", IMAGE_CAPTION_API_KEY).strip()
 COS_SECRET_ID = os.getenv("COS_SECRET_ID", "").strip()
 COS_SECRET_KEY = os.getenv("COS_SECRET_KEY", "").strip()
 COS_REGION = os.getenv("COS_REGION", "").strip()
@@ -54,6 +66,7 @@ COS_BUCKET = os.getenv("COS_BUCKET", "").strip()
 COS_OBJECT_PREFIX = os.getenv("COS_OBJECT_PREFIX", "sightline-agent").strip("/")
 COS_SIGNED_URL_TTL_SECONDS = int(os.getenv("COS_SIGNED_URL_TTL_SECONDS", "600"))
 COS_DELETE_AFTER_SEARCH = os.getenv("COS_DELETE_AFTER_SEARCH", "true").lower() in {"1", "true", "yes"}
+_serper_search_exhausted = False
 
 
 class ToolFailure(RuntimeError):
@@ -63,6 +76,51 @@ class ToolFailure(RuntimeError):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+
+
+def _cache_get(namespace: str, key: str) -> str | None:
+    try:
+        TOOL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(TOOL_CACHE_PATH, timeout=30) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS tool_cache ("
+                "namespace TEXT NOT NULL, cache_key TEXT NOT NULL, value TEXT NOT NULL, "
+                "updated_at REAL NOT NULL, PRIMARY KEY(namespace, cache_key))"
+            )
+            row = connection.execute(
+                "SELECT value, updated_at FROM tool_cache WHERE namespace = ? AND cache_key = ?",
+                (namespace, key),
+            ).fetchone()
+            if row is None:
+                return None
+            if time.time() - float(row[1]) > TOOL_CACHE_TTL_SECONDS:
+                connection.execute(
+                    "DELETE FROM tool_cache WHERE namespace = ? AND cache_key = ?",
+                    (namespace, key),
+                )
+                return None
+            return str(row[0])
+    except sqlite3.Error as exc:
+        print(f"tool cache read failed: {exc}")
+        return None
+
+
+def _cache_set(namespace: str, key: str, value: str) -> None:
+    try:
+        TOOL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(TOOL_CACHE_PATH, timeout=30) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS tool_cache ("
+                "namespace TEXT NOT NULL, cache_key TEXT NOT NULL, value TEXT NOT NULL, "
+                "updated_at REAL NOT NULL, PRIMARY KEY(namespace, cache_key))"
+            )
+            connection.execute(
+                "INSERT INTO tool_cache(namespace, cache_key, value, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(namespace, cache_key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (namespace, key, value, time.time()),
+            )
+    except sqlite3.Error as exc:
+        print(f"tool cache write failed: {exc}")
 
 
 def _text(value: Any) -> str:
@@ -131,6 +189,13 @@ def _delete_private_image(client: Any, key: str) -> None:
 
 
 def _serper_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    global _serper_search_exhausted
+    cache_key = hashlib.sha256(f"{query.casefold()}\n{top_k}".encode("utf-8")).hexdigest()
+    cached = _cache_get("serper_search", cache_key)
+    if cached is not None:
+        return list(json.loads(cached))
+    if _serper_search_exhausted:
+        raise ToolFailure("SERPER_CREDITS_EXHAUSTED", "Serper search credits are exhausted")
     _require_serper()
     response = requests.post(
         SERPER_URL,
@@ -139,8 +204,52 @@ def _serper_search(query: str, top_k: int) -> list[dict[str, Any]]:
         timeout=30,
     )
     if not response.ok:
+        if response.status_code in {400, 402, 429} and "not enough credits" in response.text.casefold():
+            _serper_search_exhausted = True
+            raise ToolFailure("SERPER_CREDITS_EXHAUSTED", "Serper search credits are exhausted")
         raise ToolFailure("SERPER_HTTP_ERROR", f"Serper returned HTTP {response.status_code}: {response.text[:300]}", retryable=response.status_code >= 500)
-    return list(response.json().get("organic") or [])
+    items = list(response.json().get("organic") or [])
+    _cache_set("serper_search", cache_key, json.dumps(items, ensure_ascii=False))
+    return items
+
+
+def _bing_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    if requests is None:
+        raise ToolFailure("MISSING_DEPENDENCY", "requests is required")
+    response = requests.get(
+        BING_RSS_URL,
+        params={"format": "rss", "q": query},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; SightlineAgent/0.2)"},
+        timeout=30,
+    )
+    if not response.ok:
+        raise ToolFailure("BING_HTTP_ERROR", f"Bing returned HTTP {response.status_code}", retryable=response.status_code >= 500)
+    try:
+        root = ET.fromstring(response.content)
+    except ET.ParseError as exc:
+        raise ToolFailure("BING_INVALID_RESPONSE", "Bing returned invalid RSS") from exc
+    items: list[dict[str, Any]] = []
+    for node in root.findall("./channel/item")[: min(max(top_k, 1), MAX_RESULTS)]:
+        description = html.unescape(_text(node.findtext("description")))
+        description = re.sub(r"<[^>]+>", " ", description)
+        items.append({
+            "title": _text(node.findtext("title")),
+            "link": _text(node.findtext("link")),
+            "snippet": " ".join(description.split()),
+            "provider": "bing_rss",
+        })
+    if not items:
+        raise ToolFailure("BING_EMPTY_RESPONSE", "Bing returned no search results")
+    return items
+
+
+def _search(query: str, top_k: int) -> list[dict[str, Any]]:
+    try:
+        return _serper_search(query, top_k)
+    except (ToolFailure, requests.RequestException, ValueError):
+        if not BING_RSS_URL:
+            raise
+        return _bing_search(query, top_k)
 
 
 def _format_search(query: str, items: list[dict[str, Any]]) -> str:
@@ -153,6 +262,65 @@ def _format_search(query: str, items: list[dict[str, Any]]) -> str:
         snippet = _text(item.get("snippet"))
         lines.append(f"\n{index}. {title}\nURL: {link}\nSnippet: {snippet}")
     return "\n".join(lines)
+
+
+def _summarize_page(content: str, query: str, title: str) -> str:
+    if not SEARCH_SUMMARY_BASE_URL or not SEARCH_SUMMARY_MODEL:
+        return content[:4000]
+    response = requests.post(
+        f"{SEARCH_SUMMARY_BASE_URL}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {SEARCH_SUMMARY_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": SEARCH_SUMMARY_MODEL,
+            "temperature": 0,
+            "max_tokens": 500,
+            "messages": [{
+                "role": "user",
+                "content": (
+                    "Summarize only evidence relevant to the search query. Preserve names, dates, "
+                    "numbers, and qualifications; do not add facts.\n\n"
+                    f"Query: {query}\nTitle: {title}\nPage content:\n{content[:12000]}"
+                ),
+            }],
+        },
+        timeout=60,
+    )
+    if not response.ok:
+        raise ToolFailure(
+            "SUMMARY_HTTP_ERROR",
+            f"summary service returned HTTP {response.status_code}: {response.text[:300]}",
+            retryable=response.status_code >= 500,
+        )
+    try:
+        return _text(response.json()["choices"][0]["message"]["content"])
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise ToolFailure("SUMMARY_INVALID_RESPONSE", "summary service returned an invalid response") from exc
+
+
+def _text_search(query: str, top_k: int) -> str:
+    items = _search(query, top_k)
+    if not items:
+        return f"No results found for '{query}'"
+    passages: list[str] = []
+    for index, item in enumerate(items[:top_k], 1):
+        title = _text(item.get("title")) or "Untitled"
+        url = _text(item.get("link"))
+        snippet = _text(item.get("snippet"))
+        content = snippet
+        if url:
+            try:
+                content = _read_page(url)
+            except (ToolFailure, requests.RequestException, ValueError):
+                pass
+        try:
+            summary = _summarize_page(content, query, title)
+        except ToolFailure:
+            summary = content[:4000]
+        passages.append(f"[Passage {index}]\nTitle: {title}\nURL: {url}\nSummary:\n{summary}")
+    return "\n\n".join(passages)
 
 
 def _serper_lens(public_url: str, *, include_source_url: bool) -> str:
@@ -178,9 +346,8 @@ def _serper_lens(public_url: str, *, include_source_url: bool) -> str:
         or payload.get("images")
         or []
     )
-    if not isinstance(matches, list) or not matches:
-        message = payload.get("message") or payload.get("error") or "Serper Lens returned no image matches"
-        raise ToolFailure("SERPER_LENS_EMPTY", str(message))
+    if not isinstance(matches, list):
+        raise ToolFailure("SERPER_LENS_INVALID_RESPONSE", "Serper Lens returned an invalid match list")
     result: dict[str, Any] = {
         "provider": "serper_lens",
         "mode": "reverse_image",
@@ -235,7 +402,12 @@ def _serper_scrape(url: str) -> str:
     return text[:12000]
 
 
+@functools.lru_cache(maxsize=PAGE_CACHE_MAXSIZE)
 def _read_page(url: str) -> str:
+    cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    cached = _cache_get("page", cache_key)
+    if cached is not None:
+        return cached
     providers = (
         [PAGE_READER_PROVIDER]
         if PAGE_READER_PROVIDER in {"jina", "serper", "direct"}
@@ -245,10 +417,13 @@ def _read_page(url: str) -> str:
     for provider in providers:
         try:
             if provider == "jina":
-                return _jina_only(url)
-            if provider == "serper":
-                return _serper_scrape(url)
-            return _direct_read(url)
+                content = _jina_only(url)
+            elif provider == "serper":
+                content = _serper_scrape(url)
+            else:
+                content = _direct_read(url)
+            _cache_set("page", cache_key, content)
+            return content
         except (ToolFailure, requests.RequestException, ValueError) as exc:
             errors.append(f"{provider}: {exc}")
     raise ToolFailure(
@@ -440,10 +615,13 @@ def _resolve_image_arg(arguments: dict[str, Any]) -> tuple[bytes, str]:
 
 
 def execute_tool(name: str, arguments: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
-    if name in {"web_search", "text_search"}:
+    if name == "web_search":
         query = _query(arguments)
-        items = _serper_search(query, int(arguments.get("topK") or arguments.get("top_k") or 5))
+        items = _search(query, int(arguments.get("topK") or arguments.get("top_k") or 5))
         return _format_search(query, items), []
+    if name == "text_search":
+        query = _query(arguments)
+        return _text_search(query, int(arguments.get("topK") or arguments.get("top_k") or 5)), []
     if name == "visit":
         url = _text(arguments.get("url"))
         if not urllib.parse.urlparse(url).scheme:
@@ -454,17 +632,30 @@ def execute_tool(name: str, arguments: dict[str, Any]) -> tuple[str, list[dict[s
         if not value:
             raise ToolFailure("MISSING_IMAGE", "image or url is required")
         if value.startswith(("http://", "https://")):
-            return _serper_lens(value, include_source_url=True), []
+            cache_key = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            cached = _cache_get("serper_lens_url", cache_key)
+            if cached is None:
+                cached = _serper_lens(value, include_source_url=True)
+                _cache_set("serper_lens_url", cache_key, cached)
+            return cached, []
         data, mime = _download(value)
+        cache_key = hashlib.sha256(data).hexdigest()
+        cached = _cache_get("serper_lens_image", cache_key)
+        if cached is not None:
+            return cached, []
         if _cos_configured():
             client, key, signed_url = _upload_private_image(data, mime)
             try:
-                return _serper_lens(signed_url, include_source_url=False), []
+                result_text = _serper_lens(signed_url, include_source_url=False)
+                _cache_set("serper_lens_image", cache_key, result_text)
+                return result_text, []
             finally:
                 _delete_private_image(client, key)
         caption = _caption_image(data, mime)
         items = _serper_search(caption, MAX_RESULTS)
-        return json.dumps({"provider": "local_vlm_and_serper", "mode": "semantic_image", "query": caption, "matches": items}, ensure_ascii=False), []
+        result_text = json.dumps({"provider": "local_vlm_and_serper", "mode": "semantic_image", "query": caption, "matches": items}, ensure_ascii=False)
+        _cache_set("serper_lens_image", cache_key, result_text)
+        return result_text, []
     if name == "crop":
         _require_pillow()
         data, _mime = _resolve_image_arg(arguments)
@@ -526,7 +717,7 @@ class Handler(BaseHTTPRequestHandler):
                 local_layout = True
             except ImportError:
                 local_layout = False
-            self._send(200, {"ok": True, "serper": bool(SERPER_API_KEY), "jina": bool(JINA_API_KEY), "cos": _cos_configured(), "layout": bool(LAYOUT_URL) or local_layout, "layoutProvider": "remote" if LAYOUT_URL else ("rapidocr" if local_layout else None), "imageCaptionFallback": bool(IMAGE_CAPTION_BASE_URL and IMAGE_CAPTION_MODEL), "pillow": Image is not None})
+            self._send(200, {"ok": True, "serper": bool(SERPER_API_KEY), "bingSearchFallback": bool(BING_RSS_URL), "jina": bool(JINA_API_KEY), "cos": _cos_configured(), "layout": bool(LAYOUT_URL) or local_layout, "layoutProvider": "remote" if LAYOUT_URL else ("rapidocr" if local_layout else None), "imageCaptionFallback": bool(IMAGE_CAPTION_BASE_URL and IMAGE_CAPTION_MODEL), "pillow": Image is not None})
             return
         self._send(404, {"error": "not_found"})
 

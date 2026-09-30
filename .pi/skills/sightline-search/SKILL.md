@@ -13,7 +13,7 @@ Use `scripts/call-tool.mjs` rather than making network requests in model text. T
 Choose the narrowest tool that answers the evidence need:
 
 - `web_search` or `text_search` for ranked factual sources.
-- `visit` after search when the source body is needed.
+- `text_search` when the top source bodies and query-focused evidence are needed.
 - `image_search` for a public image URL or a Sightline artifact URI.
 - `crop` to create a focused visual artifact, then pass its artifact URI to another visual tool.
 - `layout_parsing` for OCR and reading order.

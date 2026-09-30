@@ -3,13 +3,13 @@ from __future__ import annotations
 from rl.tool_protocol import configure_tool_response_parser, parse_tool_response_text
 
 
-def test_parses_multiple_closed_tool_calls() -> None:
+def test_executes_only_one_closed_tool_call_per_turn() -> None:
     parsed = parse_tool_response_text(
         '<tool_call>{"name":"text_search","arguments":{"query":"Sydney"}}</tool_call>'
         '<tool_call>{"name":"visit","arguments":{"url":"https://example.com"}}</tool_call>'
     )
 
-    assert [call["function"]["name"] for call in parsed["tool_calls"]] == ["text_search", "visit"]
+    assert [call["function"]["name"] for call in parsed["tool_calls"]] == ["text_search"]
     assert parsed["content"] == ""
 
 
@@ -44,7 +44,7 @@ def test_configured_tokenizer_decodes_ids() -> None:
     tokenizer = configure_tool_response_parser(Tokenizer())
     parsed = tokenizer.parse_response([1, 2, 3], prefix=[9])
 
-    assert parsed["tool_calls"][0]["function"]["arguments"] == {"query": "Sydney"}
+    assert parsed["tool_calls"][0]["function"]["arguments"] == {"q": "Sydney"}
 
 
 def test_normalizes_learned_image_search_arguments() -> None:
@@ -55,7 +55,7 @@ def test_normalizes_learned_image_search_arguments() -> None:
 
     assert parsed["tool_calls"][0]["function"] == {
         "name": "image_search",
-        "arguments": {"image": "Main Street in Red Lodge"},
+        "arguments": {"url": "Main Street in Red Lodge"},
     }
 
 
@@ -67,5 +67,5 @@ def test_normalizes_legacy_aliases() -> None:
 
     assert parsed["tool_calls"][0]["function"] == {
         "name": "text_search",
-        "arguments": {"query": "Red Lodge", "topK": 3},
+        "arguments": {"q": "Red Lodge", "hl": "en", "top_k": 3},
     }

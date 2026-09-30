@@ -31,12 +31,13 @@ def test_single_rollout_image_resolves_model_alias() -> None:
 def test_multiple_rollout_images_require_an_index() -> None:
     env = environment.SearchEnvironment()
     env.reset(images=[Image.new("RGB", (4, 4)), Image.new("RGB", (4, 4))])
-    assert env._resolve_image_reference("image_1").startswith("data:image/png;base64,")
+    assert env._resolve_image_reference("img_1") == env._image_uri(env.images[0])
+    assert env._resolve_image_reference("img_2") == env._image_uri(env.images[1])
     with pytest.raises(environment.ToolGatewayError, match="ambiguous"):
         env._resolve_image_reference("the photo")
 
 
-def test_layout_result_is_compact_and_cached(monkeypatch) -> None:
+def test_layout_result_preserves_gateway_observation(monkeypatch) -> None:
     env = environment.SearchEnvironment()
     env.reset(images=[Image.new("RGB", (4, 4), "white")])
     calls = []
@@ -47,12 +48,11 @@ def test_layout_result_is_compact_and_cached(monkeypatch) -> None:
         return '{"text":"SIGHTLINE 2026","blocks":[{"text":"SIGHTLINE 2026","box":[[0,0]]}]}'
 
     monkeypatch.setattr(env, "_call", fake_call)
-    first = env.layout_parsing("image.png")
-    second = env.layout_parsing("image.png")
-    assert first == "Extracted text in reading order:\nSIGHTLINE 2026"
-    assert "already parsed" in second
-    assert len(calls) == 1
-    assert env.get_reward() == pytest.approx(-0.1)
+    first = env.layout_parsing("img_1")
+    second = env.layout_parsing("img_1")
+    assert first == '{"text":"SIGHTLINE 2026","blocks":[{"text":"SIGHTLINE 2026","box":[[0,0]]}]}'
+    assert second == first
+    assert len(calls) == 2
 
 
 def test_gateway_retries_an_empty_response(monkeypatch) -> None:
@@ -113,4 +113,4 @@ def test_image_transform_is_available_to_the_next_tool_call(monkeypatch, method_
         method("sandbox:/mnt/data/image.png")
 
     assert len(env.images) == 2
-    assert env._resolve_image_reference("image_1") == env._image_uri(transformed)
+    assert env._resolve_image_reference("img_2") == env._image_uri(transformed)

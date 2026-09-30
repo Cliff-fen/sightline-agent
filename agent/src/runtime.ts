@@ -51,7 +51,7 @@ export class SearchAgentRuntime {
       toolExecution: "sequential",
       prepareNextTurn: () => {
         this.turnCount += 1;
-        if (this.turnCount >= (this.options.maxTurns ?? 20)) this.agent.abort();
+        if (this.turnCount >= (this.options.maxTurns ?? 50)) this.agent.abort();
         return {};
       },
     });
@@ -94,7 +94,9 @@ export class SearchAgentRuntime {
       execute: async (toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) => {
         const arguments_ = "image" in params
           ? { ...params, image: resolveImageReference(params.image, this.activeImages) }
-          : params;
+          : "url" in params && definition.name === "image_search"
+            ? { ...params, url: resolveImageReference(params.url, this.activeImages) }
+            : params;
         const result = await registry.execute({ id: toolCallId, name: definition.name, arguments: arguments_ }, signal ?? new AbortController().signal);
         for (const artifact of result.artifacts ?? []) {
           if (artifact.kind === "image" && !this.activeImages.some((image) => image.uri === artifact.uri)) {

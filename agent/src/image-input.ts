@@ -4,7 +4,7 @@ import { type ImageContent } from "@earendil-works/pi-ai";
 import { type ImageRef } from "./protocol.js";
 
 const DATA_URI_RE = /^data:([^;,]+);base64,(.+)$/s;
-const IMAGE_ALIAS_RE = /^(?:(?:the|an?)\s+)?(?:(uploaded|input|original|source|current|latest|cropped|enhanced)\s+)?(?:image|photo|picture)(?:[_\s-]?(\d+))?(?:\.[a-z0-9]+)?$/i;
+const IMAGE_ALIAS_RE = /^(?:(?:the|an?)\s+)?(?:(uploaded|input|original|source|current|latest|cropped|enhanced)\s+)?(?:img|image|photo|picture)(?:[_\s-]?(\d+))?(?:\.[a-z0-9]+)?$/i;
 
 function imageNames(ref: ImageRef): Set<string> {
   const names = new Set([ref.id.toLowerCase(), ref.uri.toLowerCase()]);
@@ -34,7 +34,8 @@ export function resolveImageReference(reference: unknown, images: readonly Image
 
   const alias = IMAGE_ALIAS_RE.exec(value);
   if (alias?.[2] !== undefined) {
-    const index = Number(alias[2]);
+    const number = Number(alias[2]);
+    const index = number === 0 ? 0 : number - 1;
     if (Number.isInteger(index) && index >= 0 && index < images.length) return images[index]?.uri ?? value;
   }
   if (alias?.[1] === "latest" || alias?.[1] === "cropped" || alias?.[1] === "enhanced") {

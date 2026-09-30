@@ -7,6 +7,8 @@ test("local is the default multimodal profile", () => {
   assert.equal(config.profile, "local");
   assert.equal(config.model.id, "local-model");
   assert.deepEqual(config.model.input, ["text", "image"]);
+  assert.equal(config.model.maxTokens, 4096);
+  assert.equal(config.maxTurns, 50);
 });
 
 test("local profile accepts an arbitrary model name and endpoint", () => {
@@ -64,4 +66,10 @@ test("remote profiles require their provider-specific API keys", () => {
 test("invalid profiles and non-http endpoints fail fast", () => {
   assert.throws(() => loadRuntimeConfig({ MODEL_PROFILE: "70b" }), /MODEL_PROFILE/);
   assert.throws(() => loadRuntimeConfig({ MODEL_BASE_URL: "file:///tmp/model" }), /http or https/);
+});
+
+test("tool timeout is configurable and defaults to five minutes", () => {
+  assert.equal(loadRuntimeConfig({}).toolTimeoutMs, 300_000);
+  assert.equal(loadRuntimeConfig({ TOOL_TIMEOUT_MS: "45000" }).toolTimeoutMs, 45_000);
+  assert.throws(() => loadRuntimeConfig({ TOOL_TIMEOUT_MS: "0" }), /positive integer/);
 });

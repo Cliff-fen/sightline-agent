@@ -17,7 +17,7 @@ TOOL_RESPONSE_TEMPLATE = {
             "open": "<tool_call>",
             "close": "</tool_call>",
             "content": "json",
-            "repeats": True,
+            "repeats": False,
             "transform": {"type": "function", "function": "{content}"},
         },
     },
@@ -48,13 +48,15 @@ def _tool_call(payload: Any) -> dict[str, Any] | None:
     name = aliases.get(name, name)
     if name in {"text_search", "web_search"}:
         query = arguments.get("query") or arguments.get("q")
-        normalized = {"query": query}
-        if "topK" in arguments or "top_k" in arguments:
-            normalized["topK"] = arguments.get("topK", arguments.get("top_k"))
+        normalized = {"q": query}
+        if arguments.get("hl") or arguments.get("lang"):
+            normalized["hl"] = arguments.get("hl") or arguments.get("lang")
+        if name == "text_search" and ("topK" in arguments or "top_k" in arguments):
+            normalized["top_k"] = arguments.get("top_k", arguments.get("topK"))
         arguments = normalized
     elif name == "image_search":
         image = arguments.get("image") or arguments.get("url")
-        arguments = {"image": image}
+        arguments = {"url": image}
     elif name in {"crop", "layout_parsing", "sharpen", "super_resolution", "perspective_correct"}:
         arguments = dict(arguments)
         if "image" not in arguments and "url" in arguments:
@@ -88,7 +90,9 @@ def parse_tool_response_text(text: str) -> dict[str, Any]:
         if not has_close:
             # Execute one recoverable call, then return its observation to the policy.
             break
-        cursor = text.find("<tool_call>", trailing + len("</tool_call>"))
+        # The policy contract permits one action per model turn. Additional
+        # calls are ignored and therefore receive no observation this turn.
+        break
 
     content_end = first_marker if calls and first_marker >= 0 else len(text)
     content = text[:content_end].replace("<|im_end|>", "").strip()

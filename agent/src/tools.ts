@@ -1,11 +1,11 @@
 import { ToolGateway } from "./tool-gateway.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { createId, type ToolCall, type ToolResult } from "./protocol.js";
+import { AGENT_CONTRACT } from "./contract.js";
 
 const descriptions = {
   web_search: "Search the web and return ranked evidence snippets.",
-  text_search: "Search the web for factual evidence. Use for external facts and current information.",
-  visit: "Read a webpage and return its extracted text for evidence.",
+  text_search: "Search the web, read the top pages, and return query-focused evidence summaries.",
   image_search: "Find visual matches and source metadata for an image.",
   crop: "Create a new image artifact for a rectangular crop.",
   layout_parsing: "Extract structured text and layout from a document image.",
@@ -14,18 +14,22 @@ const descriptions = {
   perspective_correct: "Correct a mild perspective or rotation distortion.",
 };
 const schemas: Record<string, Record<string, unknown>> = {
-  web_search: { type: "object", properties: { query: { type: "string" }, topK: { type: "integer", minimum: 1, maximum: 20 } }, required: ["query"] },
-  text_search: { type: "object", properties: { query: { type: "string" }, topK: { type: "integer", minimum: 1, maximum: 10 } }, required: ["query"] },
-  visit: { type: "object", properties: { url: { type: "string", format: "uri" } }, required: ["url"] },
-  image_search: { type: "object", properties: { image: { type: "string", description: "Public image URL or image artifact URI" } }, required: ["image"] },
+  web_search: { type: "object", properties: { q: { type: "string" }, hl: { type: "string", default: "en" } }, required: ["q"] },
+  text_search: { type: "object", properties: { q: { type: "string" }, hl: { type: "string", default: "en" }, top_k: { type: "integer", minimum: 1, maximum: 20, default: 5 } }, required: ["q"] },
+  image_search: { type: "object", properties: { url: { type: "string", description: "Public image URL or image artifact URI" } }, required: ["url"] },
   crop: { type: "object", properties: { image: { type: "string" }, x: { type: "integer" }, y: { type: "integer" }, width: { type: "integer", minimum: 1 }, height: { type: "integer", minimum: 1 } }, required: ["image", "x", "y", "width", "height"] },
-  layout_parsing: { type: "object", properties: { image: { type: "string" }, orientation: { type: "boolean" } }, required: ["image"] },
+  layout_parsing: { type: "object", properties: { image: { type: "string" }, file_path: { type: "string" }, use_chart_recognition: { type: "boolean", default: false }, use_doc_orientation_classify: { type: "boolean", default: false } } },
   sharpen: { type: "object", properties: { image: { type: "string" }, amount: { type: "number", minimum: 0, maximum: 5 } }, required: ["image"] },
-  super_resolution: { type: "object", properties: { image: { type: "string" }, scale: { type: "number", minimum: 1.1, maximum: 4 } }, required: ["image"] },
-  perspective_correct: { type: "object", properties: { image: { type: "string" }, angle: { type: "number", minimum: -20, maximum: 20 } }, required: ["image"] },
+  super_resolution: { type: "object", properties: { image: { type: "string" }, scale: { type: "integer", minimum: 2, maximum: 4, default: 4 } }, required: ["image"] },
+  perspective_correct: { type: "object", properties: { image: { type: "string" } }, required: ["image"] },
 };
 
 export function registerSearchTools(registry: ToolRegistry, gateway: ToolGateway): void {
+  const registered = Object.keys(schemas);
+  if (registered.length !== AGENT_CONTRACT.tools.length
+    || registered.some((name, index) => name !== AGENT_CONTRACT.tools[index])) {
+    throw new Error("Tool registry does not match shared/agent-contract.json");
+  }
   for (const [name, inputSchema] of Object.entries(schemas)) {
     registry.register({ name, description: descriptions[name as keyof typeof descriptions], inputSchema,
       execute: (call, signal) => gateway.execute(call, signal) });

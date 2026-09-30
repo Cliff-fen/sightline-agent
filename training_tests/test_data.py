@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -41,15 +42,39 @@ def test_sft_converter_structures_tool_calls() -> None:
 
 def test_rl_converter_preserves_image_order() -> None:
     converted = data.convert_rl({"question": "What?", "answer": ["A"], "images": ["a.png", "b.png"]})
-    assert [part["type"] for part in converted["prompt"][0]["content"]] == ["image", "image", "text"]
+    assert converted["prompt"][0]["role"] == "system"
+    assert [part["type"] for part in converted["prompt"][1]["content"]] == ["image", "image", "text"]
     assert converted["images"] == ["a.png", "b.png"]
 
 
-def test_answer_reward_is_rule_based() -> None:
-    assert rewards.answer_reward(["The answer is Attabad Lake."], [["Attabad Lake"]]) == [1.0]
-    assert rewards.answer_reward(["No evidence."], [["Attabad Lake"]])[0] == 0.0
+def test_trajectory_reward_uses_both_judges_and_format_gate(monkeypatch) -> None:
+    monkeypatch.setattr(
+        rewards,
+        "_call_judge",
+        lambda kind, *args, **kwargs: "correct: yes" if kind == "accuracy" else "score: 0.5",
+    )
+    completion = [
+        {
+            "role": "assistant",
+            "content": "<think>search first</think>",
+            "tool_calls": [{"function": {"name": "text_search", "arguments": {"q": "lake"}}}],
+        },
+        {"role": "tool", "name": "text_search", "content": "evidence"},
+        {"role": "assistant", "content": "<think>enough evidence</think><response>The location is Attabad Lake.</response>"},
+    ]
+    score = asyncio.run(rewards.trajectory_reward(
+        completions=[completion],
+        answer=[["Attabad Lake"]],
+        prompts=[[{"role": "user", "content": "Which lake?"}]],
+    ))
+    assert score == [0.9]
 
 
-def test_final_answer_rejects_raw_tool_tags() -> None:
-    assert rewards.final_answer_reward(["A grounded answer."]) == [0.2]
-    assert rewards.final_answer_reward(["<tool_call>{}</tool_call>"]) == [-0.5]
+def test_format_failure_gates_both_judge_rewards(monkeypatch) -> None:
+    monkeypatch.setattr(rewards, "_call_judge", lambda kind, *args, **kwargs: "correct: yes" if kind == "accuracy" else "score: 1.0")
+    score = asyncio.run(rewards.trajectory_reward(
+        completions=[[{"role": "assistant", "content": "Attabad Lake"}]],
+        answer=[["Attabad Lake"]],
+        prompts=[[{"role": "user", "content": "Which lake?"}]],
+    ))
+    assert score == [0.0]

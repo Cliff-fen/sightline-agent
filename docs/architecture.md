@@ -27,9 +27,9 @@ The application does not parse XML tool tags or implement its own ReAct loop. To
 
 Public image URLs can go directly to reverse-image search. Local files and crop artifacts may use temporary object staging when a search provider requires a public URL. Staged objects use short-lived access and are removed after the request.
 
-The `local` profile accepts any user-supplied multimodal OpenAI-compatible endpoint. Remote profiles change only the Pi provider and model configuration. Text-only providers require a compatible visual endpoint before image input can be enabled. No checkpoint or model weight is distributed by this repository.
+The `local` profile accepts any user-supplied multimodal OpenAI-compatible endpoint. Remote profiles change only the Pi provider and model transport. Both use the same Pi `Agent`, shared system prompt, tool registry, sequential execution policy, stop limit, and tool gateway. A local vLLM server converts the checkpoint's XML/JSON tool-call format into standard API tool calls at the serving boundary. Text-only providers require a compatible visual endpoint before image input can be enabled. No checkpoint or model weight is distributed by this repository.
 
-Training follows SFT initialization with tool-interactive GRPO. Answer correctness is scored by deterministic normalized match and token F1. A reviewer is optional and limited to classifying fatal execution failures; it does not decide factual correctness. Reward signals remain proxy metrics and should be audited against an independently labeled evaluation set.
+Training follows SFT initialization with tool-interactive group-relative policy optimization. The Python training loop uses the same contract but retains its serialized action markup because token-level likelihoods and masks are required for optimization. A semantic Judge scores answer correctness, a second Judge scores search-query utility, and a per-step rule checks the tool-call format. The resulting signal is `format * (0.8 * accuracy + 0.2 * query_utility)`. Judge scores remain proxy metrics and should be audited against an independently labeled evaluation set.
 
 ## Reliability rules
 

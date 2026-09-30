@@ -80,9 +80,11 @@ def check_tools(
         env = environment_factory()
         env.reset(images=[str(image_path)])
 
-        web = run("web_search", lambda: env.web_search("Sydney Opera House official site", 2))
-        text = run("text_search", lambda: env.text_search("Sydney Opera House location", 2))
-        page = run("visit", lambda: env.visit("https://example.com"))
+        web = run("web_search", lambda: env.web_search("Sydney Opera House official site"))
+        text = run(
+            "text_search",
+            lambda: env.text_search(q="Sydney Opera House location", top_k=2),
+        )
         lens: str | None = None
         lens_calls = 0
         lens_failures = 0
@@ -96,14 +98,13 @@ def check_tools(
         layout = run("layout_parsing", lambda: env.layout_parsing("image_0"))
         sharpen = run("sharpen", lambda: env.sharpen("image_0", 1.5))
         upscale = run("super_resolution", lambda: env.super_resolution("image_0", 1.5))
-        corrected = run("perspective_correct", lambda: env.perspective_correct("image_0", 1.0))
+        corrected = run("perspective_correct", lambda: env.perspective_correct("image_0"))
 
         for name, value in {"web_search": web, "text_search": text}.items():
             if not isinstance(value, str) or "URL:" not in value:
                 raise PreflightError(f"{name} returned no ranked evidence")
-        for name, value in {"visit": page, "layout_parsing": layout}.items():
-            if not isinstance(value, str) or not value.strip():
-                raise PreflightError(f"{name} returned empty content")
+        if not isinstance(layout, str) or not layout.strip():
+            raise PreflightError("layout_parsing returned empty content")
         if probe_image and (not isinstance(lens, str) or not lens.strip()):
             raise PreflightError("image_search returned empty content")
         for name, value in {

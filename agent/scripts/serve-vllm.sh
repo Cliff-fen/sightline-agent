@@ -17,4 +17,6 @@ exec vllm serve "${MODEL_PATH}" \
   --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-1}" \
   --dtype "${MODEL_DTYPE:-bfloat16}" \
   --max-model-len "${MODEL_CONTEXT_WINDOW:-65536}" \
+  --enable-auto-tool-choice \
+  --tool-call-parser "${MODEL_TOOL_CALL_PARSER:-hermes}" \
   --limit-mm-per-prompt "${MODEL_MM_LIMIT:-image=16}"

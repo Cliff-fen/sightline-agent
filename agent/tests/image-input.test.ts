@@ -27,7 +27,8 @@ test("indexed inputs and the latest artifact resolve deterministically", () => {
     { kind: "image" as const, id: "crop", uri: "artifact://crop.png" },
   ];
   assert.equal(resolveImageReference("image_0", images), images[0]?.uri);
-  assert.equal(resolveImageReference("image_1", images), images[1]?.uri);
+  assert.equal(resolveImageReference("img_1", images), images[0]?.uri);
+  assert.equal(resolveImageReference("img_2", images), images[1]?.uri);
   assert.equal(resolveImageReference("latest image", images), images[1]?.uri);
   assert.equal(resolveImageReference("artifact://explicit.png", images), "artifact://explicit.png");
 });

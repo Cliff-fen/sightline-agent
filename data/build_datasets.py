@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
+from data.prompts import DEEP_RESEARCH_SYSTEM_PROMPT
+
 
 TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 
@@ -35,8 +37,8 @@ def _tool_call(text: str) -> tuple[str, dict[str, Any] | None]:
 
 def convert_sft(record: dict[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
-    if record.get("system"):
-        messages.append({"role": "system", "content": [{"type": "text", "text": str(record["system"])}]})
+    system = str(record.get("system") or DEEP_RESEARCH_SYSTEM_PROMPT)
+    messages.append({"role": "system", "content": [{"type": "text", "text": system}]})
     pending_call: tuple[str, str] | None = None
     for turn_index, turn in enumerate(record.get("conversations") or []):
         role = turn.get("from")
@@ -74,7 +76,10 @@ def convert_rl(record: dict[str, Any]) -> dict[str, Any]:
     content = [{"type": "image"} for _ in images]
     content.append({"type": "text", "text": question})
     return {
-        "prompt": [{"role": "user", "content": content}],
+        "prompt": [
+            {"role": "system", "content": DEEP_RESEARCH_SYSTEM_PROMPT},
+            {"role": "user", "content": content},
+        ],
         "answer": record["answer"],
         "images": images,
         "dataset": record.get("dataset", "unknown"),

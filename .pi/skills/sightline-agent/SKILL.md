@@ -8,7 +8,7 @@ license: MIT
 
 Requires Node.js 22+ and a running Sightline agent HTTP service.
 
-Delegate the whole investigation to the running service with `scripts/run-agent.mjs`. Do not reproduce its tool loop in the calling Pi session: Sightline's Pi runtime owns tool selection, parallel execution, turn state, limits, and provider message conversion.
+Delegate the whole investigation to the running service with `scripts/run-agent.mjs`. Do not reproduce its tool loop in the calling Pi session: Sightline's Pi runtime owns tool selection, sequential execution, turn state, limits, and provider message conversion.
 
 ```bash
 node .pi/skills/sightline-agent/scripts/run-agent.mjs \

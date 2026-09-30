@@ -1,4 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { AGENT_CONTRACT } from "./contract.js";
 import { loadRuntimeConfig } from "./model-config.js";
 import { assertRunRequest, type RunResponse } from "./protocol.js";
 import { SearchAgentRuntime } from "./runtime.js";
@@ -8,17 +9,14 @@ import { registerSearchTools } from "./tools.js";
 
 const port = Number(process.env.PORT ?? 8080);
 const runtimeConfig = loadRuntimeConfig();
-const gateway = new ToolGateway({ baseUrl: runtimeConfig.toolGatewayUrl });
+const gateway = new ToolGateway({
+  baseUrl: runtimeConfig.toolGatewayUrl,
+  timeoutMs: runtimeConfig.toolTimeoutMs,
+});
 const registry = new ToolRegistry();
 registerSearchTools(registry, gateway);
 
-const defaultSystemPrompt = [
-  "You are an evidence-grounded visual investigation agent. Verify, do not guess.",
-  "Use crop for small regions, layout_parsing for text and reading order, sharpen or super_resolution for blur or low resolution, and perspective_correct for mild tilt.",
-  "Use external search whenever the answer depends on facts not visible in pixels. Image search identifies an entity and must be followed by text search for the requested fact.",
-  "Plan one next action at a time, wait for its observation, use the latest image artifact, and never invent tool results.",
-  "Stop only when the answer is supported by observations and retrieved evidence; do not repeat uninformative searches.",
-].join(" ");
+const defaultSystemPrompt = AGENT_CONTRACT.systemPrompt;
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
