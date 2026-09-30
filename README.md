@@ -166,10 +166,10 @@ accelerate launch sft/train.py --config sft/configs/production.yaml
 accelerate launch rl/train.py --config rl/configs/production.yaml
 ```
 
-The checked-in profiles are backend-neutral starting points. Adjust process
-count, effective batch, memory strategy, and optional adapters in a private
-configuration suited to the target system. Stage-specific options are
-documented in [`data/`](data/), [`sft/`](sft/), and [`rl/`](rl/).
+The checked-in profiles validate their effective batch and use epoch-based
+stopping rather than a repository-wide step limit. Copy a profile before
+changing its batching, memory strategy, or optional adapters. Stage-specific
+options are documented in [`data/`](data/), [`sft/`](sft/), and [`rl/`](rl/).
 
 ## Use as skills
 

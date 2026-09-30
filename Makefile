@@ -11,7 +11,7 @@ agent-test:
 	cd agent && npm test
 
 python-test:
-	$(PYTHON) -m pytest -q training_tests
+	$(PYTHON) -m pytest -q tests
 
 generation-check:
 	$(PYTHON) -m py_compile data/generation/*.py

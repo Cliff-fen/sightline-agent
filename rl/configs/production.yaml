@@ -2,15 +2,16 @@ model_name_or_path: outputs/sft
 train_file: data/processed/rl/train.jsonl
 eval_file: data/processed/rl/validation.jsonl
 output_dir: outputs/grpo
-max_steps: 500
-num_train_epochs: 100
+num_train_epochs: 1
 learning_rate: 1.0e-6
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 4
+expected_world_size: 8
+expected_global_batch_size: 32
 num_generations: 8
 num_generations_eval: 1
-steps_per_generation: 8
+steps_per_generation: 4
 max_prompt_length: 4096
 max_context_length: 64000
 max_completion_length: 70000
@@ -40,5 +41,4 @@ vllm_mode: colocate
 vllm_gpu_memory_utilization: 0.35
 vllm_max_model_length: 74576
 vllm_tensor_parallel_size: 1
-deepspeed: null
 report_to: none

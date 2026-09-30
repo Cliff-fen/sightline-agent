@@ -31,7 +31,7 @@ class TrainConfig:
     train_file: str
     output_dir: str
     eval_file: str | None = None
-    max_steps: int = 500
+    max_steps: int = -1
     num_train_epochs: float = 1.0
     learning_rate: float = 1e-6
     per_device_train_batch_size: int = 2
